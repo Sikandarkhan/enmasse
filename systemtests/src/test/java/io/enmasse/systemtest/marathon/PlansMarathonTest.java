@@ -107,6 +107,9 @@ class PlansMarathonTest extends MarathonTestBase {
                 manyAddressesPlan.getName(), AuthService.STANDARD);
         createAddressSpace(manyAddressesSpace);
 
+        UserCredentials cred = new UserCredentials("testus", "papyrus");
+        createUser(manyAddressesSpace, cred);
+
         ArrayList<Destination> dest = new ArrayList<>();
         int destCount = 3900;
         for (int i = 0; i < destCount; i++) {
@@ -117,20 +120,11 @@ class PlansMarathonTest extends MarathonTestBase {
 
         waitForBrokerReplicas(manyAddressesSpace, dest.get(0), 6);
 
-        UserCredentials cred = new UserCredentials("testus", "papyrus");
-        createUser(manyAddressesSpace, cred);
-        AmqpClient queueClient = amqpClientFactory.createQueueClient(manyAddressesSpace);
-        queueClient.getConnectOptions().setCredentials(cred);
-        for (int i = 0; i < destCount; i += 100) {
-            QueueTest.runQueueTest(queueClient, dest.get(i), 42);
-        }
+        assertCanConnect(manyAddressesSpace, cred, dest);
 
         deleteAddresses(manyAddressesSpace, dest.subList(0, destCount / 2).toArray(new Destination[0]));
         waitForBrokerReplicas(manyAddressesSpace, dest.get(0), 3);
 
-        for (int i = destCount / 2; i < destCount; i += 50) {
-            QueueTest.runQueueTest(queueClient, dest.get(i), 42);
-        }
-        queueClient.close();
+        assertCanConnect(manyAddressesSpace, cred, dest.subList(0, destCount / 2));
     }
 }
