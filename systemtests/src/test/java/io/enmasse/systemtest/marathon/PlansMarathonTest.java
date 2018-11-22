@@ -13,14 +13,11 @@ import io.enmasse.systemtest.resources.AddressSpaceResource;
 import io.enmasse.systemtest.standard.QueueTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
+import java.util.*;
+import java.util.concurrent.TimeUnit;
 
 class PlansMarathonTest extends MarathonTestBase {
 
@@ -40,8 +37,7 @@ class PlansMarathonTest extends MarathonTestBase {
 
     }
 
-    @Test
-    @Disabled("disabled due to: #1319")
+    //@Test
     void testHighLoadAddresses() throws Exception {
         //define and create address plans
         List<AddressResource> addressResourcesQueue = Collections.singletonList(new AddressResource("broker", 0.001));
@@ -66,23 +62,22 @@ class PlansMarathonTest extends MarathonTestBase {
         ArrayList<Destination> dest = new ArrayList<>();
         int destCount = 3900;
         for (int i = 0; i < destCount; i++) {
-            dest.add(Destination.queue("xxs-queue-" + i, xxsQueuePlan.getName()));//broker credit = 0.001 => 4 pods
+            dest.add(Destination.queue("xxs-queue-" + i, xxsQueuePlan.getName()));
         }
         setAddresses(manyAddressesSpace, dest.toArray(new Destination[0]));
 
-//        TODO once getAddressPlanConfig() method will be implemented
-//        double requiredCredit = getAddressPlanConfig(DestinationPlan.STANDARD_SMALL_QUEUE.plan()).getRequiredCreditFromResource("broker");
-//        int replicasCount = (int) (destCount * requiredCredit);
-//        waitForBrokerReplicas(sharedAddressSpace, dest.get(0), replicasCount);
-        waitForBrokerReplicas(manyAddressesSpace, dest.get(0), 4);
+        waitForBrokerReplicas(manyAddressesSpace, dest.get(0), 6);
 
-        AmqpClient queueClient = amqpClientFactory.createQueueClient();
+        UserCredentials cred = new UserCredentials("testus", "papyrus");
+        createUser(manyAddressesSpace, cred);
+        AmqpClient queueClient = amqpClientFactory.createQueueClient(manyAddressesSpace);
+        queueClient.getConnectOptions().setCredentials(cred);
         for (int i = 0; i < destCount; i += 100) {
             QueueTest.runQueueTest(queueClient, dest.get(i), 42);
         }
 
-        deleteAddresses(manyAddressesSpace, dest.subList(0, destCount / 2).toArray(new Destination[0])); //broker credit = 0.001 => 2 pods
-        waitForBrokerReplicas(manyAddressesSpace, dest.get(0), 2);
+        deleteAddresses(manyAddressesSpace, dest.subList(0, destCount / 2).toArray(new Destination[0]));
+        waitForBrokerReplicas(manyAddressesSpace, dest.get(0), 4);
 
         for (int i = destCount / 2; i < destCount; i += 50) {
             QueueTest.runQueueTest(queueClient, dest.get(i), 42);
@@ -91,7 +86,6 @@ class PlansMarathonTest extends MarathonTestBase {
     }
 
     @Test
-    @Disabled("disabled due to: #1306")
     void testHighLoadAddressesInBatches() throws Exception {
         //define and create address plans
         List<AddressResource> addressResourcesQueue = Collections.singletonList(new AddressResource("broker", 0.001));
@@ -116,24 +110,23 @@ class PlansMarathonTest extends MarathonTestBase {
         ArrayList<Destination> dest = new ArrayList<>();
         int destCount = 3900;
         for (int i = 0; i < destCount; i++) {
-            dest.add(Destination.queue("xxs-queue-" + i, xxsQueuePlan.getName()));//broker credit = 0.001 => 4 pods
+            dest.add(Destination.queue("xxs-queue-" + i, xxsQueuePlan.getName()));
         }
         setAddresses(manyAddressesSpace);
         appendAddresses(manyAddressesSpace, true, 10, dest.toArray(new Destination[0]));
 
-//        TODO once getAddressPlanConfig() method will be implemented
-//        double requiredCredit = getAddressPlanConfig(DestinationPlan.STANDARD_SMALL_QUEUE.plan()).getRequiredCreditFromResource("broker");
-//        int replicasCount = (int) (destCount * requiredCredit);
-//        waitForBrokerReplicas(sharedAddressSpace, dest.get(0), replicasCount);
-        waitForBrokerReplicas(manyAddressesSpace, dest.get(0), 4);
+        waitForBrokerReplicas(manyAddressesSpace, dest.get(0), 6);
 
-        AmqpClient queueClient = amqpClientFactory.createQueueClient();
+        UserCredentials cred = new UserCredentials("testus", "papyrus");
+        createUser(manyAddressesSpace, cred);
+        AmqpClient queueClient = amqpClientFactory.createQueueClient(manyAddressesSpace);
+        queueClient.getConnectOptions().setCredentials(cred);
         for (int i = 0; i < destCount; i += 100) {
             QueueTest.runQueueTest(queueClient, dest.get(i), 42);
         }
 
-        deleteAddresses(manyAddressesSpace, dest.subList(0, destCount / 2).toArray(new Destination[0])); //broker credit = 0.001 => 2 pods
-        waitForBrokerReplicas(manyAddressesSpace, dest.get(0), 2);
+        deleteAddresses(manyAddressesSpace, dest.subList(0, destCount / 2).toArray(new Destination[0]));
+        waitForBrokerReplicas(manyAddressesSpace, dest.get(0), 3);
 
         for (int i = destCount / 2; i < destCount; i += 50) {
             QueueTest.runQueueTest(queueClient, dest.get(i), 42);
