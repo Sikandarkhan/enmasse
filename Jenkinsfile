@@ -1,147 +1,81 @@
-#!/usr/bin/env groovy
+#!/usr/bin/groovy
 
-def lib = evaluate readTrusted('./jenkins-functions.groovy')
+@Library('github.com/fabric8io/fabric8-pipeline-library@master')
+def canaryVersion = "1.0.${env.BUILD_NUMBER}"
+def utils = new io.fabric8.Utils()
+def stashName = "buildpod.${env.JOB_NAME}.${env.BUILD_NUMBER}".replace('-', '_').replace('/', '_')
+def envStage = utils.environmentNamespace('stage')
+def envProd = utils.environmentNamespace('run')
+def setupScript = null
 
-pipeline {
-    agent {
-        node {
-            label 'enmasse'
-        }
-    }
-    environment {
-        STANDARD_JOB_NAME = 'enmasse-master-standard'
-        BROKERED_JOB_NAME = 'enmasse-master-brokered'
-        PLANS_JOB_NAME = 'enmasse-master-common'
-        UPGRADE_JOB_NAME = 'enmasse-master-upgrade'
-        MAILING_LIST = credentials('MAILING_LIST')
-    }
-    parameters {
-        string(name: 'CLEAN_REGISTRY', defaultValue: 'true', description: 'clean registry')
-        string(name: 'REGISTRY_AGE', defaultValue: '20', description: 'registry older then REGISTRY_AGE (in hours) will be removed')
-        string(name: 'MAILING_LIST', defaultValue: env.MAILING_LIST, description: 'mailing list when build failed')
-    }
-    options {
-        timeout(time: 1, unit: 'HOURS')
-        ansiColor('xterm')
-    }
-    stages {
-        stage('wait for agent ready') {
-            steps {
-                script {
-                    lib.waitUntilAgentReady()
-                }
-            }
-        }
-        stage('cleanup registry') {
-            environment {
-                REGISTRY_URL = credentials('internal-registry')
-                DOCKER_CREDENTIALS = credentials('docker-registry-credentials')
-                DOCKER_PASS = "${env.DOCKER_CREDENTIALS_PSW}"
-                DOCKER_USER = "${env.DOCKER_CREDENTIALS_USR}"
-            }
-            when {
-                expression { params.CLEAN_REGISTRY == 'true' }
-            }
-            steps {
-                sh "./systemtests/scripts/reg_cleaner.sh ${params.REGISTRY_AGE} ${env.DOCKER_PASS} ${env.REGISTRY_URL}"
-            }
-        }
-        stage('clean') {
-            steps {
-                cleanWs()
-                sh 'docker stop $(docker ps -q) || true'
-                sh 'docker rm $(docker ps -a -q) -f || true'
-                sh 'docker rmi $(docker images -q) -f || true'
-            }
-        }
-        stage('checkout') {
-            steps {
-                checkout scm
-                sh 'echo $(git log --format=format:%H -n1) > actual-commit.file'
-                sh 'rm -rf artifacts && mkdir -p artifacts'
-            }
-        }
-        stage('build') {
-            steps {
-                withCredentials([string(credentialsId: 'docker-registry-host', variable: 'DOCKER_REGISTRY')]) {
-                    sh 'MOCHA_ARGS="--reporter=mocha-junit-reporter" TAG=$BUILD_TAG make'
-                }
-            }
-        }
-        stage('push docker image') {
-            steps {
-                withCredentials([string(credentialsId: 'docker-registry-host', variable: 'DOCKER_REGISTRY'), usernamePassword(credentialsId: 'docker-registry-credentials', passwordVariable: 'DOCKER_PASS', usernameVariable: 'DOCKER_USER')]) {
-                    sh 'TAG=$BUILD_TAG make docker_tag'
-                    sh '$DOCKER login -u $DOCKER_USER -p $DOCKER_PASS $DOCKER_REGISTRY'
-                    sh 'TAG=$BUILD_TAG make docker_push'
-                }
-            }
-        }
-        stage('execute brokered') {
-            environment {
-                ACTUAL_COMMIT = readFile('actual-commit.file')
-            }
-            steps {
-                build job: env.BROKERED_JOB_NAME, wait: false, parameters: [
-                                [$class: 'StringParameterValue', name: 'BUILD_TAG', value: BUILD_TAG],
-                                [$class: 'StringParameterValue', name: 'MAILING_LIST', value: params.MAILING_LIST],
-                                [$class: 'StringParameterValue', name: 'TEST_CASE', value: 'brokered.**'],
-                                [$class: 'StringParameterValue', name: 'COMMIT_SHA', value: env.ACTUAL_COMMIT],
-                        ]
-            }
-        }
-        stage('execute standard') {
-            environment {
-                ACTUAL_COMMIT = readFile('actual-commit.file')
-            }
-            steps {
-                build job: env.STANDARD_JOB_NAME, wait: false, parameters: [
-                                [$class: 'StringParameterValue', name: 'BUILD_TAG', value: BUILD_TAG],
-                                [$class: 'StringParameterValue', name: 'MAILING_LIST', value: params.MAILING_LIST],
-                                [$class: 'StringParameterValue', name: 'TEST_CASE', value: 'standard.**'],
-                                [$class: 'StringParameterValue', name: 'COMMIT_SHA', value: env.ACTUAL_COMMIT],
-                        ]
-            }
-        }
-        stage('execute common') {
-            environment {
-                ACTUAL_COMMIT = readFile('actual-commit.file')
-            }
-            steps {
-                build job: env.PLANS_JOB_NAME, wait: false, parameters: [
-                                [$class: 'StringParameterValue', name: 'BUILD_TAG', value: BUILD_TAG],
-                                [$class: 'StringParameterValue', name: 'MAILING_LIST', value: params.MAILING_LIST],
-                                [$class: 'StringParameterValue', name: 'TEST_CASE', value: 'common.**'],
-                                [$class: 'StringParameterValue', name: 'COMMIT_SHA', value: env.ACTUAL_COMMIT],
-                        ]
-            }
-        }
-        stage('execute upgrade') {
-            environment {
-                ACTUAL_COMMIT = readFile('actual-commit.file')
-            }
-            steps {
-                build job: env.UPGRADE_JOB_NAME, wait: false, parameters: [
-                        [$class: 'StringParameterValue', name: 'BUILD_TAG', value: BUILD_TAG],
-                        [$class: 'StringParameterValue', name: 'TEST_CASE', value: 'common.upgrade.**'],
-                        [$class: 'StringParameterValue', name: 'COMMIT_SHA', value: env.ACTUAL_COMMIT],
-                ]
-            }
-        }
-    }
-    post {
-        always {
-            //store test results from build and system tests
-            junit '**/TEST-*.xml'
+mavenNode {
+  checkout scm
+  if (utils.isCI()) {
 
-            //archive test results and openshift lofs
-            archive '**/TEST-*.xml'
-            archive 'artifacts/**'
-            archive 'templates/install/**'
-        }
-        failure {
-            echo "build failed"
-            mail to: "$MAILING_LIST", subject: "EnMasse master build has finished with ${result}", body: "See ${env.BUILD_URL}"
-        }
+    mavenCI {
+        integrationTestCmd =
+         "mvn org.apache.maven.plugins:maven-failsafe-plugin:integration-test \
+            org.apache.maven.plugins:maven-failsafe-plugin:verify \
+            -Dnamespace.use.current=false -Dnamespace.use.existing=${utils.testNamespace()} \
+            -Dit.test=*IT -DfailIfNoTests=false -DenableImageStreamDetection=true \
+            -P openshift-it"
     }
+
+  } else if (utils.isCD()) {
+    /*
+     * Try to load the script ".openshiftio/Jenkinsfile.setup.groovy".
+     * If it exists it must contain two functions named "setupEnvironmentPre()"
+     * and "setupEnvironmentPost()" which should contain code that does any extra
+     * required setup in OpenShift specific for the booster. The Pre version will
+     * be called _before_ the booster objects are created while the Post version
+     * will be called afterwards.
+     */
+    try {
+      setupScript = load "${pwd()}/.openshiftio/Jenkinsfile.setup.groovy"
+    } catch (Exception ex) {
+      echo "Jenkinsfile.setup.groovy not found"
+    }
+
+    echo 'NOTE: running pipelines for the first time will take longer as build and base docker images are pulled onto the node'
+    container(name: 'maven', shell:'/bin/bash') {
+      stage('Build Image') {
+        mavenCanaryRelease {
+          version = canaryVersion
+        }
+        //stash deployment manifests
+        stash includes: '**/*.yml', name: stashName
+      }
+    }
+  }
 }
+
+if (utils.isCD()) {
+  node {
+    stage('Rollout to Stage') {
+      unstash stashName
+      setupScript?.setupEnvironmentPre(envStage)
+      apply {
+        environment = envStage
+      }
+      setupScript?.setupEnvironmentPost(envStage)
+    }
+
+    stage('Approve') {
+      approve {
+        room = null
+        version = canaryVersion
+        environment = 'Stage'
+      }
+    }
+
+    stage('Rollout to Run') {
+      unstash stashName
+      setupScript?.setupEnvironmentPre(envProd)
+      apply {
+        environment = envProd
+      }
+      setupScript?.setupEnvironmentPost(envProd)
+    }
+  }
+}
+
